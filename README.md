@@ -7,9 +7,12 @@
 - `hero_winrate_analysis_before.py`：改造前代码留档
 - `hero_winrate_analysis_refactored.py`：改造后完整代码
 - `run_hero_winrate_task.ps1`：定时任务调用入口
+- `Dockerfile`：Docker 镜像构建文件
+- `docker-compose.yaml`：容器编排配置
 - `requirements.txt`：通过 `pip freeze > requirements.txt` 生成
 - `作业A提交文档.md`：基础改造说明
 - `作业B提交文档.md`：Git 上传说明
+- `作业C提交文档.md`：容器化与部署说明
 - `log_capture.png`：日志截图
 - `scheduled_task_capture.png`：定时任务触发截图
 
@@ -34,4 +37,10 @@ python hero_winrate_analysis_refactored.py
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run_hero_winrate_task.ps1
+```
+
+## Docker 运行
+
+```powershell
+docker compose up --build
 ```

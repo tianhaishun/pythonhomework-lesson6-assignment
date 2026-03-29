@@ -1,0 +1,14 @@
+services:
+  lesson6-task:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lesson6-task
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_DATA_DIR: /app/runtime
+    volumes:
+      - ./runtime:/app/runtime
+    command: ["python", "hero_winrate_analysis_refactored.py"]

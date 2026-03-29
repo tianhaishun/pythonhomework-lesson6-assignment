@@ -18,21 +18,7 @@ import pymysql
 # 配置区
 # ==============================
 BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_EXCEL = BASE_DIR / "hero_winrate_refactored.xlsx"
-LOG_FILE = BASE_DIR / "task.log"
-MIN_TOTAL_GAMES = 30
-ANALYST_NAME = "lesson6_auto_task"
-WRITE_ANALYSIS_LOG = True
 ENV_FILE = BASE_DIR / ".env"
-
-DB_CONFIG = {
-    "host": "",
-    "port": 3306,
-    "user": "",
-    "password": "",
-    "database": "",
-    "charset": "utf8mb4",
-}
 
 warnings.filterwarnings(
     "ignore",
@@ -41,9 +27,44 @@ warnings.filterwarnings(
 )
 
 
-def setup_logger() -> logging.Logger:
+def get_bool_env(name: str, default: bool) -> bool:
+    """把环境变量中的布尔值转成 Python 布尔类型。"""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_runtime_settings() -> dict:
+    """读取运行期配置，统一返回给主流程使用。"""
+    raw_data_dir = Path(os.environ.get("APP_DATA_DIR", str(BASE_DIR)))
+    data_dir = raw_data_dir if raw_data_dir.is_absolute() else (BASE_DIR / raw_data_dir).resolve()
+    output_excel_name = os.environ.get("OUTPUT_EXCEL_NAME", "hero_winrate_refactored.xlsx")
+    log_file_name = os.environ.get("LOG_FILE_NAME", "task.log")
+
+    return {
+        "data_dir": data_dir,
+        "output_excel": data_dir / output_excel_name,
+        "log_file": data_dir / log_file_name,
+        "min_total_games": int(os.environ.get("MIN_TOTAL_GAMES", "30")),
+        "analyst_name": os.environ.get("ANALYST_NAME", "lesson6_auto_task"),
+        "write_analysis_log": get_bool_env("WRITE_ANALYSIS_LOG", True),
+    }
+
+
+def setup_logger(log_file: Path) -> logging.Logger:
     """初始化日志，让日志同时输出到屏幕和 task.log。"""
     logger = logging.getLogger("hero_winrate_refactored")
+    if logger.handlers:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
     if logger.handlers:
         return logger
 
@@ -53,7 +74,7 @@ def setup_logger() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(formatter)
 
     stream_handler = logging.StreamHandler(sys.stdout)
@@ -82,12 +103,12 @@ def load_env_file() -> None:
 def build_db_config() -> dict:
     """从环境变量构建数据库配置，避免把敏感信息写入代码仓库。"""
     return {
-        "host": os.getenv("DB_HOST", DB_CONFIG["host"]),
-        "port": int(os.getenv("DB_PORT", str(DB_CONFIG["port"]))),
-        "user": os.getenv("DB_USER", DB_CONFIG["user"]),
-        "password": os.getenv("DB_PASSWORD", DB_CONFIG["password"]),
-        "database": os.getenv("DB_NAME", DB_CONFIG["database"]),
-        "charset": os.getenv("DB_CHARSET", DB_CONFIG["charset"]),
+        "host": os.environ.get("DB_HOST", ""),
+        "port": int(os.environ.get("DB_PORT", "3306")),
+        "user": os.environ.get("DB_USER", ""),
+        "password": os.environ.get("DB_PASSWORD", ""),
+        "database": os.environ.get("DB_NAME", ""),
+        "charset": os.environ.get("DB_CHARSET", "utf8mb4"),
     }
 
 
@@ -124,7 +145,7 @@ def connect_to_database(logger: logging.Logger):
         return None
 
 
-def fetch_hero_statistics(connection, logger: logging.Logger) -> pd.DataFrame:
+def fetch_hero_statistics(connection, logger: logging.Logger, min_total_games: int) -> pd.DataFrame:
     """查询英雄统计数据，并按胜率从高到低返回。"""
     sql = f"""
     SELECT
@@ -147,7 +168,7 @@ def fetch_hero_statistics(connection, logger: logging.Logger) -> pd.DataFrame:
         win_rate DESC;
     """
 
-    df = pd.read_sql(sql, connection, params=[MIN_TOTAL_GAMES])
+    df = pd.read_sql(sql, connection, params=[min_total_games])
     logger.info("查询完成，共获取 %s 个英雄的数据", len(df))
     return df
 
@@ -195,14 +216,15 @@ def log_statistics_summary(df: pd.DataFrame, logger: logging.Logger) -> None:
         )
 
 
-def export_to_excel(df: pd.DataFrame, logger: logging.Logger) -> None:
+def export_to_excel(df: pd.DataFrame, logger: logging.Logger, output_excel: Path) -> None:
     """将分析结果导出成 Excel 文件。"""
     export_df = build_export_dataframe(df)
-    export_df.to_excel(OUTPUT_EXCEL, index=False, engine="openpyxl")
-    logger.info("Excel 导出成功: %s", OUTPUT_EXCEL)
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
+    export_df.to_excel(output_excel, index=False, engine="openpyxl")
+    logger.info("Excel 导出成功: %s", output_excel)
 
 
-def write_analysis_log(connection, df: pd.DataFrame, logger: logging.Logger) -> None:
+def write_analysis_log(connection, df: pd.DataFrame, logger: logging.Logger, analyst_name: str) -> None:
     """把分析结果写入 analysis_log 表，便于后续追踪。"""
     cursor = connection.cursor()
     run_sql = """
@@ -221,7 +243,7 @@ def write_analysis_log(connection, df: pd.DataFrame, logger: logging.Logger) -> 
                     int(row["total_games"]),
                     int(row["win_games"]),
                     float(row["win_rate"]),
-                    ANALYST_NAME,
+                    analyst_name,
                 ),
             )
         connection.commit()
@@ -240,13 +262,15 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")
 
     load_env_file()
-    logger = setup_logger()
+    settings = build_runtime_settings()
+    logger = setup_logger(settings["log_file"])
     logger.info("任务开始执行")
     logger.info(
-        "配置区: OUTPUT_EXCEL=%s, MIN_TOTAL_GAMES=%s, ANALYST_NAME=%s",
-        OUTPUT_EXCEL,
-        MIN_TOTAL_GAMES,
-        ANALYST_NAME,
+        "配置区: OUTPUT_EXCEL=%s, LOG_FILE=%s, MIN_TOTAL_GAMES=%s, ANALYST_NAME=%s",
+        settings["output_excel"],
+        settings["log_file"],
+        settings["min_total_games"],
+        settings["analyst_name"],
     )
 
     connection = connect_to_database(logger)
@@ -254,16 +278,16 @@ def main() -> int:
         return 1
 
     try:
-        df = fetch_hero_statistics(connection, logger)
+        df = fetch_hero_statistics(connection, logger, settings["min_total_games"])
         if df.empty:
             logger.warning("没有查询到符合条件的数据")
             return 1
 
         log_statistics_summary(df, logger)
-        export_to_excel(df, logger)
+        export_to_excel(df, logger, settings["output_excel"])
 
-        if WRITE_ANALYSIS_LOG:
-            write_analysis_log(connection, df, logger)
+        if settings["write_analysis_log"]:
+            write_analysis_log(connection, df, logger, settings["analyst_name"])
 
         logger.info("任务执行完成")
         return 0
